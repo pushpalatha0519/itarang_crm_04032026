@@ -1,7 +1,9 @@
 'use client';
 
+
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
+import stringSimilarity from "string-similarity";
 import {
     ChevronLeft, Loader2, Upload, CheckCircle2, XCircle,
     AlertCircle, Clock, Info, X, FileText, Camera, Shield,
@@ -374,16 +376,27 @@ export default function KYCPage() {
                 if (data.ocr_failed || data.enable_manual_entry) setManualEntryDoc(docType);
 
                 // Auto face match
-                if (docType === 'passport_photo' || docType === 'aadhaar_front') {
-                    const otherDoc = docType === 'passport_photo' ? 'aadhaar_front' : 'passport_photo';
-                    const otherUpload = uploadedDocs[otherDoc];
-                    if (otherUpload?.file_url) {
-                        triggerAutoFaceMatch(
-                            docType === 'passport_photo' ? data.file_url : otherUpload.file_url,
-                            docType === 'aadhaar_front' ? data.file_url : otherUpload.file_url
-                        );
-                    }
-                }
+                setUploadedDocs(prev => {
+    const updated = { ...prev, [docType]: docUpload };
+
+    if (docType === 'passport_photo' || docType === 'aadhaar_front') {
+        const otherDoc = docType === 'passport_photo' ? 'aadhaar_front' : 'passport_photo';
+        const otherUpload = updated[otherDoc];
+
+        if (otherUpload?.file_url) {
+            triggerAutoFaceMatch(
+                docType === 'passport_photo'
+                    ? data.file_url
+                    : otherUpload.file_url,
+                docType === 'aadhaar_front'
+                    ? data.file_url
+                    : otherUpload.file_url
+            );
+        }
+    }
+
+    return updated;
+});
 
                 // Auto address match
                 if (docType === 'aadhaar_back' && data.ocr_data?.address) {
@@ -418,7 +431,7 @@ export default function KYCPage() {
         if (!lead?.current_address) return;
         const a = aadhaarAddress.trim().toLowerCase().replace(/\s+/g, ' ');
         const b = (lead.current_address || '').trim().toLowerCase().replace(/\s+/g, ' ');
-        const similarity = a === b ? 100 : Math.round((1 - Math.abs(a.length - b.length) / Math.max(a.length, b.length)) * 100);
+        const similarity = Math.round(stringSimilarity.compareTwoStrings(a, b) * 100);
         if (similarity < 70) {
             setOcrComparisons(prev => ({
                 ...prev,
@@ -501,6 +514,23 @@ export default function KYCPage() {
         if (type === 'account' && val.length >= 4) return 'XXXXX' + val.slice(-4);
         return val;
     };
+    const getKycProgress = () => {
+    let total = 6;
+    let completed = 0;
+
+    if (paymentMethod) completed++;
+    if (uploadedDocs?.aadhaar_front?.file_url) completed++;
+    if (uploadedDocs?.aadhaar_back?.file_url) completed++;
+    if (uploadedDocs?.passport_photo?.file_url) completed++;
+    if (faceResult?.is_match) completed++;
+    if (consentStatus === "submitted") completed++;
+
+    return {
+        total,
+        completed,
+        percent: Math.round((completed / total) * 100)
+    };
+};
 
     const buildComparisonRows = () => {
         const rows: Array<{
