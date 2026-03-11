@@ -51,21 +51,40 @@ export function withErrorHandler(handler: Function) {
 export async function generateId(prefix: string, table: any): Promise<string> {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
-    // Find the last ID for this prefix and date
-    const lastRecord = await db.select({ id: table.id })
-        .from(table)
-        .where(sql`${table.id} LIKE ${prefix + '-' + date + '-%'}`)
-        .orderBy(desc(table.id))
-        .limit(1);
+    // Try up to 10 times to generate a unique ID (handles race conditions)
+    for (let attempt = 0; attempt < 10; attempt++) {
+        // Find the last ID for this prefix and date
+        const lastRecord = await db.select({ id: table.id })
+            .from(table)
+            .where(sql`${table.id} LIKE ${prefix + '-' + date + '-%'}`)
+            .orderBy(desc(table.id))
+            .limit(1);
 
-    let sequence = 1;
-    if (lastRecord.length > 0) {
-        const lastId = lastRecord[0].id;
-        const lastSeq = parseInt(lastId.split('-').pop() || '0');
-        sequence = lastSeq + 1;
+        let sequence = 1;
+        if (lastRecord.length > 0) {
+            const lastId = lastRecord[0].id;
+            const lastSeq = parseInt(lastId.split('-').pop() || '0');
+            sequence = lastSeq + 1 + attempt; // Add attempt number to avoid conflicts
+        }
+
+        const candidateId = `${prefix}-${date}-${sequence.toString().padStart(3, '0')}`;
+
+        // Check if this ID already exists
+        const existing = await db.select({ id: table.id })
+            .from(table)
+            .where(eq(table.id, candidateId))
+            .limit(1);
+
+        if (existing.length === 0) {
+            return candidateId; // ID is available
+        }
+
+        // If we get here, there's a conflict, try again with higher sequence
     }
 
-    return `${prefix}-${date}-${sequence.toString().padStart(3, '0')}`;
+    // If we can't find a unique ID after 10 attempts, use timestamp-based ID
+    const timestamp = Date.now();
+    return `${prefix}-${date}-${timestamp.toString().slice(-6)}`;
 }
 
 export async function generateLeadReference(table: any): Promise<string> {

@@ -29,6 +29,7 @@
     "nanoid": "^5.1.6",
     "next": "16.1.3",
     "papaparse": "^5.5.3",
+    "pdfkit": "^0.17.2",
     "postgres": "^3.4.8",
     "razorpay": "^2.9.6",
     "react": "19.2.3",
@@ -55,5 +56,21 @@
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5"
-  }
+  },
+  "description": "This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).",
+  "main": "ecosystem.config.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/apoorvgupta0709/itarang_crm_04032026.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/apoorvgupta0709/itarang_crm_04032026/issues"
+  },
+  "homepage": "https://github.com/apoorvgupta0709/itarang_crm_04032026#readme"
 }
