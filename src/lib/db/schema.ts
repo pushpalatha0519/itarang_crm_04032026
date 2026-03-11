@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, boolean, varchar, decimal, jsonb, uuid, index } from 'drizzle-orm/pg-core';
+// --import { pgTable, text, timestamp, integer, boolean, varchar, decimal, jsonb, uuid, index } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
 // --- FOUNDATION ---
@@ -1317,4 +1317,5 @@ export const appSettings = pgTable('app_settings', {
     key: text('key').primaryKey(),
     value: jsonb('value').notNull(),
     updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow(),
-});
+}); 
+
