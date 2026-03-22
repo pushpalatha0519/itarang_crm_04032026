@@ -1,4 +1,6 @@
+'use client';
 
+import { useState } from 'react';
 import { db } from '@/lib/db';
 import { leads, leadAssignments, users, assignmentChangeLogs, callRecords, conversationMessages } from '@/lib/db/schema';
 import { eq, desc } from 'drizzle-orm';
@@ -16,14 +18,11 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     const { id: leadId } = await params;
     const user = await requireAuth();
 
-    // 1. Fetch Lead
     const [lead] = await db.select().from(leads).where(eq(leads.id, leadId)).limit(1);
     if (!lead) return <div className="p-8 text-center bg-white rounded-xl shadow-sm border m-8">Lead not found</div>;
 
-    // 2. Fetch Assignment
     const [assignment] = await db.select().from(leadAssignments).where(eq(leadAssignments.lead_id, leadId)).limit(1);
 
-    // 3. Fetch Call Records + Messages
     const rawRecords = await db.select()
         .from(callRecords)
         .where(eq(callRecords.lead_id, leadId))
@@ -46,7 +45,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         };
     }));
 
-    // 4. Fetch All Users for Dropdown
     const allUsers = await db.select({
         id: users.id,
         name: users.name,
@@ -60,7 +58,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     const canAssignOwner = isSalesHead;
     const canAssignActor = isSalesHead || isOwner;
 
-    // 5. Fetch History
     const changedByUser = alias(users, 'changed_by_user');
     const oldUser = alias(users, 'old_user');
     const newUser = alias(users, 'new_user');
@@ -80,6 +77,33 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         .leftJoin(newUser, eq(assignmentChangeLogs.new_user_id, newUser.id))
         .where(eq(assignmentChangeLogs.lead_id, leadId))
         .orderBy(desc(assignmentChangeLogs.changed_at));
+
+    // ----------------- PDF State & Function -----------------
+    const [pdfLoading, setPdfLoading] = useState(false);
+
+    const generateConsentPDF = async () => {
+        setPdfLoading(true);
+        try {
+            const response = await fetch(`/api/kyc/${lead.id}/consent/manual/generate-pdf`, { method: 'POST' });
+            if (!response.ok) throw new Error('Failed to generate consent PDF');
+
+            const pdfBlob = await response.blob();
+            const objectUrl = URL.createObjectURL(pdfBlob);
+            const link = document.createElement('a');
+            link.href = objectUrl;
+            link.download = `DPDPA_consent_form_for_data_processing_${lead.id}.pdf`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(objectUrl);
+        } catch (error) {
+            console.error('Error generating PDF:', error);
+            alert('Failed to generate PDF');
+        } finally {
+            setPdfLoading(false);
+        }
+    };
+    // --------------------------------------------------------
 
     return (
         <div className="max-w-4xl mx-auto py-8 px-4">
@@ -127,7 +151,20 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                                 <span className="font-semibold text-gray-900">{lead.owner_email || 'N/A'}</span>
                             </div>
                         </div>
+
+                        {/* ---------------- PDF Button ---------------- */}
+                        <div className="flex justify-end mt-4">
+                            <Button
+                                onClick={generateConsentPDF}
+                                disabled={pdfLoading}
+                                variant="outline"
+                            >
+                                {pdfLoading ? 'Generating...' : 'Generate Consent PDF'}
+                            </Button>
+                        </div>
+                        {/* ------------------------------------------- */}
                     </div>
+
                     <div className="bg-slate-50/50 p-5 rounded-xl border border-gray-100">
                         <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Location & Business</h3>
                         <div className="space-y-3 text-sm">

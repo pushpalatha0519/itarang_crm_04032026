@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { leads, kycDocuments, kycVerifications, consentRecords } from '@/lib/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { leads, kycDocuments, kycVerifications, couponCodes } from '@/lib/db/schema';
+import { and, eq } from 'drizzle-orm';
+import { isConsentVerified } from '@/lib/consent-status';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ leadId: string }> }) {
     try {
@@ -17,31 +18,76 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
             return NextResponse.json({ success: false, error: { message: 'Lead not found' } }, { status: 404 });
         }
 
-        // Check required docs
-        const requiredCount = paymentMethod === 'upfront' ? 3 : 11;
-        if (docs.length < requiredCount) {
+        const leadRow = lead[0];
+        const method = (paymentMethod || leadRow.payment_method || '').toLowerCase();
+        const isCash = method === 'cash';
+        const isFinance = !isCash;
+
+        const uploadedDocTypes = new Set(
+            docs
+                .filter((d) => !!d.file_url)
+                .map((d) => String(d.doc_type || '').toLowerCase())
+        );
+
+        const requiredDocTypes = isCash
+            ? ['aadhaar_front', 'aadhaar_back', 'pan_card']
+            : [
+                'aadhaar_front',
+                'aadhaar_back',
+                'pan_card',
+                'passport_photo',
+                'address_proof',
+                'bank_statement',
+                'cheque_1',
+                'cheque_2',
+                'cheque_3',
+                'cheque_4',
+            ];
+
+        const assetModel = (leadRow.asset_model || '').toLowerCase();
+        const needsRc = ['2w', '3w', '4w'].some((prefix) => assetModel.startsWith(prefix));
+        if (isFinance && needsRc) requiredDocTypes.push('rc_copy');
+
+        const missingDocTypes = requiredDocTypes.filter((docType) => !uploadedDocTypes.has(docType));
+        if (missingDocTypes.length) {
             return NextResponse.json({
                 success: false,
                 error: { message: 'Not all required documents uploaded' },
-                missingItems: [],
+                missingItems: missingDocTypes,
             }, { status: 400 });
         }
 
         // Check consent
-        const consentOk = ['digitally_signed', 'manual_uploaded', 'verified'].includes(lead[0].consent_status || '');
+        const consentOk = isConsentVerified(leadRow.consent_status);
         if (!consentOk) {
             return NextResponse.json({
                 success: false,
-                error: { message: 'Customer consent is required' },
+                error: { message: 'Customer consent must be verified before proceeding' },
             }, { status: 400 });
         }
 
-        // Check for critical verification failures
-        const failedVerifications = verifications.filter(v => v.status === 'failed');
+        // For finance flow, coupon must be reserved for this lead
+        if (isFinance) {
+            const reservedCoupon = await db
+                .select({ id: couponCodes.id, code: couponCodes.code })
+                .from(couponCodes)
+                .where(and(
+                    eq(couponCodes.used_by_lead_id, leadId),
+                    eq(couponCodes.status, 'reserved')
+                ))
+                .limit(1);
+
+            if (!reservedCoupon.length) {
+                return NextResponse.json({
+                    success: false,
+                    error: { message: 'A verification coupon must be validated before proceeding' },
+                }, { status: 400 });
+            }
+        }
 
         // Calculate KYC score
-        const totalRequired = requiredCount;
-        const docsUploaded = docs.length;
+        const totalRequired = requiredDocTypes.length;
+        const docsUploaded = totalRequired - missingDocTypes.length;
         const verificationsPassed = verifications.filter(v => v.status === 'success').length;
         const totalVerifications = verifications.length || 1;
 
@@ -54,14 +100,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
         const now = new Date();
 
         // Check if interim step is needed (additional docs or co-borrower required)
-        const requiresInterim = lead[0].has_co_borrower || lead[0].has_additional_docs_required;
+        const requiresInterim = !!leadRow.has_co_borrower;
 
         if (requiresInterim) {
             await db.update(leads)
                 .set({
                     kyc_status: 'completed',
-                    kyc_score: kycScore,
-                    kyc_completed_at: now,
                     workflow_step: 2, // Stay at 2, interim is a sub-step
                     updated_at: now,
                 })
@@ -79,8 +123,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
         await db.update(leads)
             .set({
                 kyc_status: 'completed',
-                kyc_score: kycScore,
-                kyc_completed_at: now,
                 workflow_step: 3,
                 updated_at: now,
             })

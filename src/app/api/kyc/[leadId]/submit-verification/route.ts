@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { kycVerifications, kycDocuments, leads, couponCodes } from '@/lib/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { validateDocument, verifyBankAccount } from '@/lib/decentro';
+import { isConsentVerified } from '@/lib/consent-status';
 
 const VERIFICATION_LABELS: Record<string, string> = {
     aadhaar: 'Aadhaar Verification',
@@ -46,23 +47,104 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
     try {
         const { leadId } = await params;
         const { couponCode, pan_number, account_number, ifsc, account_holder_name } = await req.json();
-
-        // Use coupon
-        if (couponCode) {
-            await db.update(couponCodes)
-                .set({ status: 'used', used_by_lead_id: leadId, used_at: new Date() })
-                .where(and(eq(couponCodes.code, couponCode), eq(couponCodes.status, 'validated')));
-        }
+        const now = new Date();
 
         const lead = await db.select().from(leads).where(eq(leads.id, leadId)).limit(1);
         if (!lead.length) {
             return NextResponse.json({ success: false, error: { message: 'Lead not found' } }, { status: 404 });
         }
 
+        const leadRow = lead[0];
+        const paymentMethod = (leadRow.payment_method || '').toLowerCase();
+        const isFinance = ['finance', 'other_finance', 'dealer_finance'].includes(paymentMethod);
+
+        if (isFinance) {
+            const consentOk = isConsentVerified(leadRow.consent_status);
+            if (!consentOk) {
+                return NextResponse.json({
+                    success: false,
+                    error: { message: 'Consent must be verified before verification' },
+                }, { status: 400 });
+            }
+
+            const docs = await db.select({
+                doc_type: kycDocuments.doc_type,
+                file_url: kycDocuments.file_url,
+            })
+                .from(kycDocuments)
+                .where(eq(kycDocuments.lead_id, leadId));
+
+            const uploadedDocTypes = new Set(
+                docs
+                    .filter((d) => !!d.file_url)
+                    .map((d) => String(d.doc_type || '').toLowerCase())
+            );
+
+            const requiredDocTypes = [
+                'aadhaar_front',
+                'aadhaar_back',
+                'pan_card',
+                'passport_photo',
+                'address_proof',
+                'bank_statement',
+                'cheque_1',
+                'cheque_2',
+                'cheque_3',
+                'cheque_4',
+            ];
+
+            const assetModel = (leadRow.asset_model || '').toLowerCase();
+            const needsRc = ['2w', '3w', '4w'].some((prefix) => assetModel.startsWith(prefix));
+            if (needsRc) requiredDocTypes.push('rc_copy');
+
+            const missingDocTypes = requiredDocTypes.filter((docType) => !uploadedDocTypes.has(docType));
+            if (missingDocTypes.length) {
+                return NextResponse.json({
+                    success: false,
+                    error: {
+                        message: 'Upload all required documents before verification',
+                        missing_documents: missingDocTypes,
+                    },
+                }, { status: 400 });
+            }
+        }
+
+        // Consume reserved coupon when verification starts
+        if (isFinance) {
+            const requestedCouponCode = couponCode ? String(couponCode).toUpperCase().trim() : null;
+
+            const reservedCoupons = await db
+                .select({ id: couponCodes.id, code: couponCodes.code })
+                .from(couponCodes)
+                .where(and(
+                    eq(couponCodes.used_by_lead_id, leadId),
+                    eq(couponCodes.status, 'reserved')
+                ))
+                .limit(1);
+
+            if (!reservedCoupons.length) {
+                return NextResponse.json({
+                    success: false,
+                    error: { message: 'A valid reserved coupon is required before verification' },
+                }, { status: 400 });
+            }
+
+            const reservedCoupon = reservedCoupons[0];
+            if (requestedCouponCode && reservedCoupon.code !== requestedCouponCode) {
+                return NextResponse.json({
+                    success: false,
+                    error: { message: `Lead is reserved with ${reservedCoupon.code}, not ${requestedCouponCode}` },
+                }, { status: 409 });
+            }
+
+            await db.update(couponCodes)
+                .set({ status: 'used', updated_at: now })
+                .where(eq(couponCodes.id, reservedCoupon.id));
+        }
+
         const vehicleSlugs = ['2w', '3w', '4w', 'commercial'];
-        const assetModel = (lead[0].asset_model || '').toLowerCase();
+        const assetModel = (leadRow.asset_model || '').toLowerCase();
         const isVehicle = vehicleSlugs.some(s => assetModel.startsWith(s));
-        const now = new Date();
 
         // ── 1. PAN Verification (auto if pan_number provided) ──────────────
         if (pan_number) {

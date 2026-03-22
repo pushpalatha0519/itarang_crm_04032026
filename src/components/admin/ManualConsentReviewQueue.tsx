@@ -47,7 +47,7 @@ export default function ManualConsentReviewQueue() {
     const load = async () => {
         setLoading(true);
         try {
-            const res = await fetch('/api/admin/manual-consent-reviews?status=manual_review_pending');
+            const res = await fetch('/api/admin/consent-reviews');
             const data = await res.json();
             if (data.success) setItems(data.data || []);
         } finally {
@@ -66,7 +66,6 @@ export default function ManualConsentReviewQueue() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    checklist,
                     reviewNotes,
                 }),
             });
@@ -84,11 +83,10 @@ export default function ManualConsentReviewQueue() {
     const submitReject = async (leadId: string) => {
         setSubmitting(true);
         try {
-            const res = await fetch(`/api/kyc/${leadId}/consent/manual/admin/reject`, {
+            const res = await fetch(`/api/kyc/${leadId}/consent/manual/admin/verify/reject`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    checklist,
                     reviewNotes,
                     rejectionReason,
                 }),

@@ -171,6 +171,11 @@ export default function InterimStepPage() {
     const handleSubmitCoBorrowerVerification = async () => {
         const requiredUploaded = CO_BORROWER_DOCS.filter(d => d.required).every(d => coBorrowerDocs[d.key]?.file_url);
         if (!requiredUploaded) { setApiError('Please upload all required co-borrower documents'); return; }
+        if (!couponCode.trim()) { setApiError('Please enter verification coupon code'); return; }
+        if (!['digitally_signed', 'manual_uploaded', 'admin_verified', 'manual_verified'].includes(coBorrowerConsentStatus)) {
+            setApiError('Co-borrower consent must be verified before submission');
+            return;
+        }
 
         setSubmitting(true);
         try {
@@ -234,6 +239,17 @@ export default function InterimStepPage() {
 
     const requiredCobDocs = CO_BORROWER_DOCS.filter(d => d.required);
     const cobDocsUploaded = requiredCobDocs.filter(d => coBorrowerDocs[d.key]?.file_url).length;
+    const coBorrowerConsentVerified = ['digitally_signed', 'manual_uploaded', 'admin_verified', 'manual_verified'].includes(coBorrowerConsentStatus);
+    const canSubmitCoBorrowerVerification = cobDocsUploaded >= requiredCobDocs.length
+        && !!couponCode.trim()
+        && coBorrowerConsentVerified;
+
+    const getCoBorrowerBlockingReason = () => {
+        if (cobDocsUploaded < requiredCobDocs.length) return 'Upload all required documents';
+        if (!coBorrowerConsentVerified) return 'Awaiting consent verification';
+        if (!couponCode.trim()) return 'Enter verification coupon';
+        return 'Complete required fields';
+    };
 
     return (
         <div className="min-h-screen bg-[#F8F9FB]">
@@ -363,11 +379,16 @@ export default function InterimStepPage() {
                                     className="flex-1 h-11 px-4 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
                                     maxLength={20}
                                 />
-                                <button onClick={handleSubmitCoBorrowerVerification} disabled={submitting || cobDocsUploaded < requiredCobDocs.length} className="px-6 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2">
+                                <button onClick={handleSubmitCoBorrowerVerification} disabled={submitting || !canSubmitCoBorrowerVerification} className="px-6 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2">
                                     {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
                                     Submit for Verification
                                 </button>
                             </div>
+                            {!canSubmitCoBorrowerVerification && (
+                                <p className="text-xs text-amber-700 font-medium">
+                                    {getCoBorrowerBlockingReason()}
+                                </p>
+                            )}
 
                             {coBorrowerVerifications.length > 0 && (
                                 <table className="w-full text-sm mt-4">

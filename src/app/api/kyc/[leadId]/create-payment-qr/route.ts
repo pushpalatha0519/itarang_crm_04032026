@@ -46,27 +46,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
 
         if (coupon_code && coupon_id) {
             const coupons = await db.select().from(couponCodes)
-                .where(and(eq(couponCodes.id, coupon_id), eq(couponCodes.status, 'available')))
+                .where(and(
+                    eq(couponCodes.id, coupon_id),
+                    eq(couponCodes.code, String(coupon_code).toUpperCase().trim()),
+                    eq(couponCodes.status, 'reserved'),
+                    eq(couponCodes.used_by_lead_id, leadId)
+                ))
                 .limit(1);
 
-            if (coupons.length) {
-                const coupon = coupons[0];
-                discountType = coupon.discount_type;
-                discountValue = coupon.discount_value ? Number(coupon.discount_value) : null;
-                discountAmount = calculateDiscount(
-                    BASE_FEE,
-                    discountType,
-                    discountValue,
-                    coupon.max_discount_cap ? Number(coupon.max_discount_cap) : null
-                );
-                validatedCouponId = coupon.id;
-                validatedCouponCode = coupon.code;
-
-                // Mark coupon as validated
-                await db.update(couponCodes)
-                    .set({ status: 'validated', validated_at: new Date(), used_by_lead_id: leadId, used_by: user.id })
-                    .where(eq(couponCodes.id, coupon.id));
+            if (!coupons.length) {
+                return NextResponse.json({
+                    success: false,
+                    error: { message: 'Coupon must be reserved for this lead before generating QR' },
+                }, { status: 400 });
             }
+
+            const coupon = coupons[0];
+            discountType = coupon.discount_type;
+            discountValue = coupon.discount_value ? Number(coupon.discount_value) : null;
+            discountAmount = calculateDiscount(
+                BASE_FEE,
+                discountType,
+                discountValue,
+                coupon.max_discount_cap ? Number(coupon.max_discount_cap) : null
+            );
+            validatedCouponId = coupon.id;
+            validatedCouponCode = coupon.code;
         }
 
         const finalAmount = BASE_FEE - discountAmount;

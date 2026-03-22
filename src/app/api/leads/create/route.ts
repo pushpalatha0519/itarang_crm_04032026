@@ -68,8 +68,16 @@ export const POST = withErrorHandler(async (req: Request) => {
     let dealer_id = user.dealer_id;
 
     try {
+        if (dealer_id) {
+            const [dealerAccount] = await db.select({ id: accounts.id })
+                .from(accounts)
+                .where(eq(accounts.id, dealer_id))
+                .limit(1);
+            if (!dealerAccount) dealer_id = undefined;
+        }
+
         if (!dealer_id) {
-            const [acc] = await db.select().from(accounts).limit(1);
+            const [acc] = await db.select({ id: accounts.id }).from(accounts).limit(1);
             dealer_id = acc?.id;
         }
     } catch (err) {
@@ -150,6 +158,7 @@ export const POST = withErrorHandler(async (req: Request) => {
             console.log(`[leads/create] Initializing draft: leadId=${leadId}, referenceId=${referenceId}, dealerId=${dealer_id}`);
 
             await db.transaction(async (tx) => {
+                const draftPhone = normalizePhone(user.phone) || '+910000000000';
                 const leadValues = {
                     id: leadId,
                     reference_id: referenceId,
@@ -158,11 +167,10 @@ export const POST = withErrorHandler(async (req: Request) => {
                     status: 'INCOMPLETE',
                     workflow_step: 1,
                     lead_source: 'dealer_referral',
-                    owner_name: 'DRAFT',
-                    owner_contact: 'DRAFT',
+                    owner_name: 'Draft Lead',
+                    owner_contact: draftPhone,
                     lead_status: 'new',
                     is_current_same: false,
-                    auto_filled: false,
                     created_at: new Date(),
                     updated_at: new Date()
                 };
@@ -186,7 +194,12 @@ export const POST = withErrorHandler(async (req: Request) => {
             return successResponse({ leadId, referenceId }, 201);
         } catch (err: any) {
             console.error("Draft initialization failed:", err);
-            return errorResponse(`Failed to initialize or load your draft: ${err.message || 'Unknown error'}. Please try again.`, 500);
+            const dbDetails = [err?.code, err?.constraint, err?.detail].filter(Boolean).join(' | ');
+            const msg = err?.message || 'Unknown error';
+            return errorResponse(
+                `Failed to initialize or load your draft: ${msg}${dbDetails ? ` (${dbDetails})` : ''}. Please try again.`,
+                500
+            );
         }
     }
 

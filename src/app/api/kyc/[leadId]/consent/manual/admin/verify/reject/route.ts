@@ -45,7 +45,7 @@ export async function POST(
 
         const { leadId } = await params;
         const body = await req.json();
-        const { rejectionReason, reviewNotes, checklist } = body;
+        const { rejectionReason, reviewNotes } = body;
 
         if (!rejectionReason || !ALLOWED_REASONS.includes(rejectionReason)) {
             return NextResponse.json(
@@ -74,8 +74,7 @@ export async function POST(
             .set({
                 review_status: 'manual_rejected',
                 rejection_reason: rejectionReason,
-                review_notes: reviewNotes ?? null,
-                manual_checklist: checklist ?? null,
+                rejection_notes: reviewNotes ?? null,
                 reviewed_by: admin.id,
                 reviewed_at: now,
                 updated_at: now,
@@ -84,7 +83,8 @@ export async function POST(
 
         await db.update(leads)
             .set({
-                consent_status: 'manual_rejected',
+                // Keep lead status within the simplified 4-state model.
+                consent_status: 'awaiting_signature',
                 updated_at: now,
             })
             .where(eq(leads.id, leadId));
@@ -93,7 +93,7 @@ export async function POST(
 
         return NextResponse.json({
             success: true,
-            status: 'manual_rejected',
+            status: 'awaiting_signature',
             reviewedAt: now.toISOString(),
         });
     } catch (error) {

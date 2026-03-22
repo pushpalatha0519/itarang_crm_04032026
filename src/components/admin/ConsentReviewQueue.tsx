@@ -19,8 +19,8 @@ const REJECTION_REASONS = [
     'Thumb impression missing',
     'Witness signature missing',
     'PDF not legible',
-    'Name mismatch',
-    'Tampering suspected',
+    'Date missing or invalid',
+    'Suspected forgery',
 ];
 
 export default function ConsentReviewQueue() {
@@ -52,13 +52,15 @@ export default function ConsentReviewQueue() {
         if (!reviewingTask) return;
         setSubmitting(true);
         try {
-            const endpoint = `/api/kyc/${reviewingTask.lead_id}/consent/admin/${action === 'approve' ? 'verify' : 'reject'}`;
+            const endpoint = action === 'approve'
+                ? `/api/kyc/${reviewingTask.lead_id}/consent/manual/admin/verify`
+                : `/api/kyc/${reviewingTask.lead_id}/consent/manual/admin/verify/reject`;
             const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    notes,
-                    reason: action === 'reject' ? rejectionReason : undefined,
+                    reviewNotes: notes,
+                    rejectionReason: action === 'reject' ? rejectionReason : undefined,
                 }),
             });
             const data = await res.json();
@@ -66,6 +68,8 @@ export default function ConsentReviewQueue() {
                 setReviewingTask(null);
                 setNotes('');
                 await fetchTasks();
+            } else {
+                alert(data?.error || data?.error?.message || 'Action failed. Please try again.');
             }
         } catch (err) {
             alert('Action failed. Please try again.');

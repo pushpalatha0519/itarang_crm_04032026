@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { leads, manualConsentAudits } from '@/lib/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { createClient } from '@/lib/supabase/server';
+import { CONSENT_STATUS } from '@/lib/consent-status';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ leadId: string }> }) {
     try {
@@ -23,7 +24,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
 
             // Update Lead
             await tx.update(leads).set({
-                consent_status: 'admin_rejected',
+                consent_status: CONSENT_STATUS.ADMIN_REJECTED,
                 consent_rejection_reason: reason,
                 consent_rejection_notes: notes,
                 consent_rejected_by: user.id,
@@ -36,9 +37,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
             const audits = await tx.select().from(manualConsentAudits).where(eq(manualConsentAudits.lead_id, leadId)).orderBy(desc(manualConsentAudits.created_at)).limit(1);
             if (audits.length) {
                 await tx.update(manualConsentAudits).set({
-                    review_status: 'manual_rejected',
+                    review_status: CONSENT_STATUS.MANUAL_REJECTED,
                     rejection_reason: reason,
-                    review_notes: notes,
+                    rejection_notes: notes,
                     reviewed_by: user.id,
                     reviewed_at: now,
                     updated_at: now,

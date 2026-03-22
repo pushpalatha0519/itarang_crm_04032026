@@ -1,6 +1,6 @@
 import { db } from '@/lib/db';
-import { slas, auditLogs, users } from '@/lib/db/schema';
-import { eq, lt, and, sql } from 'drizzle-orm';
+import { slas, auditLogs, users, leads, consentRecords } from '@/lib/db/schema';
+import { eq, lt, and, inArray, sql } from 'drizzle-orm';
 import { withErrorHandler, successResponse, generateId } from '@/lib/api-utils';
 import { triggerN8nWebhook } from '@/lib/n8n';
 
@@ -17,6 +17,38 @@ export const GET = withErrorHandler(async (req: Request) => {
 
     const now = new Date();
 
+    // Consent expiry handler (runs with same cron trigger).
+    const expiredConsentLeads = await db
+        .select({ id: leads.id })
+        .from(leads)
+        .where(
+            and(
+                inArray(leads.consent_status, ['link_sent', 'link_opened', 'esign_in_progress']),
+                lt(leads.consent_link_expires_at, now)
+            )
+        );
+
+    for (const row of expiredConsentLeads) {
+        await db.update(leads)
+            .set({
+                consent_status: 'expired',
+                updated_at: now,
+            })
+            .where(eq(leads.id, row.id));
+
+        await db.update(consentRecords)
+            .set({
+                consent_status: 'expired',
+                updated_at: now,
+            })
+            .where(
+                and(
+                    eq(consentRecords.lead_id, row.id),
+                    inArray(consentRecords.consent_status, ['link_sent', 'link_opened', 'esign_in_progress'])
+                )
+            );
+    }
+
     // 1. Find active SLAs that have breached their deadline
     const breachedSlas = await db.select()
         .from(slas)
@@ -26,7 +58,10 @@ export const GET = withErrorHandler(async (req: Request) => {
         ));
 
     if (breachedSlas.length === 0) {
-        return successResponse({ message: 'No breached SLAs found' });
+        return successResponse({
+            message: 'No breached SLAs found',
+            consentLinksExpired: expiredConsentLeads.length,
+        });
     }
 
     // 2. Fetch CEO for default escalation if no specific escalatee
@@ -73,6 +108,7 @@ export const GET = withErrorHandler(async (req: Request) => {
 
     return successResponse({
         message: `Processed ${results.length} breached SLAs`,
-        ids: results
+        ids: results,
+        consentLinksExpired: expiredConsentLeads.length,
     });
 });

@@ -37,10 +37,7 @@ export async function POST(
         const { leadId } = await params;
         const body = await req.json();
 
-        const {
-            checklist,
-            reviewNotes,
-        } = body;
+        const { reviewNotes } = body;
 
         const rows = await db
             .select()
@@ -60,9 +57,8 @@ export async function POST(
 
         await db.update(manualConsentAudits)
             .set({
-                review_status: 'manual_verified',
-                manual_checklist: checklist ?? null,
-                review_notes: reviewNotes ?? null,
+                review_status: 'verified',
+                rejection_notes: reviewNotes ?? null,
                 reviewed_by: admin.id,
                 reviewed_at: now,
                 updated_at: now,
@@ -71,14 +67,14 @@ export async function POST(
 
         await db.update(leads)
             .set({
-                consent_status: 'manual_verified',
+                consent_status: 'verified',
                 updated_at: now,
             })
             .where(eq(leads.id, leadId));
 
         return NextResponse.json({
             success: true,
-            status: 'manual_verified',
+            status: 'verified',
             reviewedAt: now.toISOString(),
         });
     } catch (error) {

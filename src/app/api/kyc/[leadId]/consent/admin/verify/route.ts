@@ -18,7 +18,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
         await db.transaction(async (tx) => {
             // Update Lead
             await tx.update(leads).set({
-                consent_status: 'verified', // Final status from BRD
+                consent_status: 'verified',
                 consent_verified_by: user.id,
                 consent_verified_at: now,
                 consent_verification_notes: notes,
@@ -30,8 +30,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
             const audits = await tx.select().from(manualConsentAudits).where(eq(manualConsentAudits.lead_id, leadId)).orderBy(desc(manualConsentAudits.created_at)).limit(1);
             if (audits.length) {
                 await tx.update(manualConsentAudits).set({
-                    review_status: 'manual_verified',
-                    review_notes: notes,
+                    review_status: 'verified',
                     reviewed_by: user.id,
                     reviewed_at: now,
                     updated_at: now,

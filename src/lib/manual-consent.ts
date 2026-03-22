@@ -44,12 +44,14 @@ export function isPdfBuffer(buffer: Buffer) {
 
 export async function extractPdfMetadata(buffer: Buffer) {
     try {
-        const pdfParse = await import('pdf-parse');
-        const parsed = await pdfParse.default(buffer);
+        const { PDFParse } = await import('pdf-parse');
+        const parser = new PDFParse({ data: buffer });
+        const parsed = await parser.getText();
+        await parser.destroy();
         return {
-            pageCount: parsed.numpages ?? null,
-            info: parsed.info ?? null,
-            version: parsed.version ?? null,
+            pageCount: parsed.total ?? null,
+            info: null,
+            version: null,
             textLength: parsed.text?.length ?? 0,
         };
     } catch {

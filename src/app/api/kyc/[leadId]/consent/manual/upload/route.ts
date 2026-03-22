@@ -2,10 +2,15 @@ export const runtime = 'nodejs';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { leads, manualConsentAudits } from '@/lib/db/schema';
+import { consentRecords, leads, manualConsentAudits } from '@/lib/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { createClient } from '@/lib/supabase/server';
 import {
+    CONSENT_STATUS,
+    getPersistedLeadStatusForManualReviewPending,
+} from '@/lib/consent-status';
+import {
+    generateManualConsentId,
     isPdfBuffer,
     runVirusScan,
     extractPdfMetadata,
@@ -91,7 +96,7 @@ export async function POST(
         const { data: urlData } = supabase.storage.from('documents').getPublicUrl(fileName);
         const now = new Date();
 
-        const latestAuditRows = await db
+        let latestAuditRows = await db
             .select()
             .from(manualConsentAudits)
             .where(eq(manualConsentAudits.lead_id, leadId))
@@ -99,10 +104,36 @@ export async function POST(
             .limit(1);
 
         if (!latestAuditRows.length) {
-            return NextResponse.json(
-                { success: false, error: { message: 'Generate manual consent PDF first' } },
-                { status: 400 }
-            );
+            const nowForCreate = new Date();
+            const consentRecordId = generateManualConsentId('CONSENT');
+            const manualAuditId = generateManualConsentId('MCAUDIT');
+
+            await db.insert(consentRecords).values({
+                id: consentRecordId,
+                lead_id: leadId,
+                consent_for: 'primary',
+                channel: 'manual',
+                consent_type: 'manual',
+                consent_status: 'manual_pdf_generated',
+                created_at: nowForCreate,
+                updated_at: nowForCreate,
+            });
+
+            await db.insert(manualConsentAudits).values({
+                id: manualAuditId,
+                lead_id: leadId,
+                consent_record_id: consentRecordId,
+                review_status: 'manual_pdf_generated',
+                sign_method: 'manual',
+                created_at: nowForCreate,
+                updated_at: nowForCreate,
+            });
+
+            latestAuditRows = await db
+                .select()
+                .from(manualConsentAudits)
+                .where(eq(manualConsentAudits.id, manualAuditId))
+                .limit(1);
         }
 
         const latestAudit = latestAuditRows[0];
@@ -121,14 +152,15 @@ export async function POST(
                     dpiCheck: 'manual_review_required',
                     source: 'manual_upload',
                 },
-                review_status: 'manual_review_pending',
+                review_status: CONSENT_STATUS.MANUAL_REVIEW_PENDING,
                 updated_at: now,
             })
             .where(eq(manualConsentAudits.id, latestAudit.id));
 
         await db.update(leads)
             .set({
-                consent_status: 'manual_review_pending',
+                // Compatibility: some existing DBs only allow 'manual_uploaded' in leads.consent_status.
+                consent_status: getPersistedLeadStatusForManualReviewPending(),
                 updated_at: now,
             })
             .where(eq(leads.id, leadId));
@@ -140,7 +172,7 @@ export async function POST(
             success: true,
             fileUrl: urlData.publicUrl,
             uploadedAt: now.toISOString(),
-            status: 'manual_review_pending',
+            status: CONSENT_STATUS.MANUAL_REVIEW_PENDING,
         });
     } catch (error) {
         console.error('[Manual Consent Upload] Error:', error);

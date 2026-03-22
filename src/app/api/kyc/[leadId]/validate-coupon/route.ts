@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { couponCodes, leads } from '@/lib/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { calculateDiscount } from '@/lib/razorpay';
+import { createClient } from '@/lib/supabase/server';
 
 const BASE_FEE = Number(process.env.FACILITATION_FEE_BASE_AMOUNT) || 1500;
 
@@ -10,6 +11,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
     try {
         const { leadId } = await params;
         const { couponCode } = await req.json();
+        const supabase = await createClient();
+        const { data: { user } } = await supabase.auth.getUser();
 
         if (!couponCode) {
             return NextResponse.json({ valid: false, message: 'Coupon code is required' });
@@ -23,23 +26,55 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
             return NextResponse.json({ valid: false, message: 'Lead not found' }, { status: 404 });
         }
 
+        // Check if another coupon is already reserved for this lead
+        const existingReserved = await db
+            .select()
+            .from(couponCodes)
+            .where(
+                and(
+                    eq(couponCodes.used_by_lead_id, leadId),
+                    eq(couponCodes.status, 'reserved')
+                )
+            )
+            .limit(1);
+
+        if (existingReserved.length) {
+            if (existingReserved[0].code.toUpperCase() !== couponCode.toUpperCase().trim()) {
+                return NextResponse.json({
+                    valid: false,
+                    message: `Lead already has reserved coupon ${existingReserved[0].code}. Release it first.`,
+                    currentCouponCode: existingReserved[0].code,
+                });
+            }
+        }
+
         // Find coupon
         const coupons = await db.select()
             .from(couponCodes)
-            .where(and(
-                eq(couponCodes.code, couponCode.toUpperCase().trim()),
-                eq(couponCodes.status, 'available')
-            ))
+            .where(eq(couponCodes.code, couponCode.toUpperCase().trim()))
             .limit(1);
 
         if (!coupons.length) {
-            return NextResponse.json({ valid: false, message: 'Invalid or already used coupon code' });
+            return NextResponse.json({ valid: false, message: 'Coupon code not found' });
         }
 
         const coupon = coupons[0];
 
+        if (coupon.status === 'revoked') {
+            return NextResponse.json({ valid: false, message: 'Coupon has been revoked' });
+        }
+        if (coupon.status === 'used') {
+            return NextResponse.json({ valid: false, message: 'Coupon already used' });
+        }
+        if (coupon.status === 'reserved' && coupon.used_by_lead_id !== leadId) {
+            return NextResponse.json({ valid: false, message: 'Coupon already reserved for another lead' });
+        }
+
         // Check expiry
         if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) {
+            await db.update(couponCodes)
+                .set({ status: 'expired', updated_at: new Date() })
+                .where(eq(couponCodes.id, coupon.id));
             return NextResponse.json({ valid: false, message: 'Coupon has expired' });
         }
 
@@ -59,8 +94,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
 
         const finalAmount = BASE_FEE - discountAmount;
 
+        // Reserve coupon for this lead (1-to-1 lock)
+        if (coupon.status !== 'reserved' || coupon.used_by_lead_id !== leadId) {
+            await db.update(couponCodes)
+                .set({
+                    status: 'reserved',
+                    used_by_lead_id: leadId,
+                    used_by: user?.id || null,
+                    validated_at: new Date(),
+                    updated_at: new Date(),
+                })
+                .where(eq(couponCodes.id, coupon.id));
+        }
+
         return NextResponse.json({
             valid: true,
+            status: 'reserved',
             coupon_id: coupon.id,
             coupon_code: coupon.code,
             discount_type: coupon.discount_type,

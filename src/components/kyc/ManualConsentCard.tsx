@@ -22,12 +22,12 @@ export function ManualConsentCard({
     const [uploading, setUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [manualPdfGenerated, setManualPdfGenerated] = useState(
-        ['manual_pdf_generated', 'manual_review_pending', 'manual_verified'].includes(consentStatus)
+        ['manual_pdf_generated', 'manual_review_pending', 'verified'].includes(consentStatus)
     );
     const [uploadedAt, setUploadedAt] = useState<string | null>(null);
     const [signedPdfUrl, setSignedPdfUrl] = useState<string | null>(null);
 
-    const digitalLocked = manualPdfGenerated || ['manual_review_pending', 'manual_verified'].includes(consentStatus);
+    const digitalLocked = manualPdfGenerated || ['manual_review_pending', 'verified'].includes(consentStatus);
     const uploadEnabled = manualPdfGenerated;
 
     const handleGeneratePdf = async () => {
@@ -36,19 +36,21 @@ export function ManualConsentCard({
             const res = await fetch(`/api/kyc/${leadId}/consent/manual/generate-pdf`, {
                 method: 'POST',
             });
-            const data = await res.json();
-
-            if (!data.success || !data.pdfUrl) {
-                onError(data.error?.message || 'Failed to generate consent PDF');
+            if (!res.ok) {
+                const data = await res.json().catch(() => null);
+                onError(data?.error?.message || 'Failed to generate consent PDF');
                 return;
             }
 
+            const blob = await res.blob();
+            const objectUrl = URL.createObjectURL(blob);
             const anchor = document.createElement('a');
-            anchor.href = data.pdfUrl;
-            anchor.download = '';
+            anchor.href = objectUrl;
+            anchor.download = `DPDPA_consent_form_for_data_processing_${leadId}.pdf`;
             document.body.appendChild(anchor);
             anchor.click();
             document.body.removeChild(anchor);
+            URL.revokeObjectURL(objectUrl);
 
             setManualPdfGenerated(true);
             onStatusChange('manual_pdf_generated');
@@ -109,10 +111,16 @@ export function ManualConsentCard({
                             onStatusChange(data.status || 'manual_review_pending');
                             resolve();
                         } else {
-                            reject(new Error(data.error?.message || 'Upload failed'));
+                            reject(
+                                new Error(
+                                    data.error?.message ||
+                                    data.message ||
+                                    `Upload failed (HTTP ${xhr.status})`
+                                )
+                            );
                         }
                     } catch {
-                        reject(new Error('Upload failed'));
+                        reject(new Error(`Upload failed (HTTP ${xhr.status})`));
                     }
                 };
 
@@ -132,7 +140,7 @@ export function ManualConsentCard({
 
             <button
                 onClick={handleGeneratePdf}
-                disabled={generating || ['link_sent', 'digitally_signed', 'manual_review_pending', 'manual_verified'].includes(consentStatus)}
+                disabled={generating || ['manual_review_pending', 'verified'].includes(consentStatus)}
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 border-2 border-gray-200 rounded-xl text-sm font-bold hover:border-[#0047AB] transition-all disabled:opacity-40"
             >
                 {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}

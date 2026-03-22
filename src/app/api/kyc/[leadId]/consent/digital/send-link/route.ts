@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { consentRecords, leads } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { generateConsentId, generateConsentToken, getConsentExpiry } from '@/lib/consent';
+import { CONSENT_STATUS, normalizeConsentStatus } from '@/lib/consent-status';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ leadId: string }> }) {
     try {
@@ -20,6 +21,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
             return NextResponse.json({ success: false, error: { message: 'Customer phone number is required' } }, { status: 400 });
         }
 
+        const currentStatus = normalizeConsentStatus(lead[0].consent_status);
+        const manualLockedStatuses = [
+            CONSENT_STATUS.MANUAL_PDF_GENERATED,
+            CONSENT_STATUS.MANUAL_REVIEW_PENDING,
+            CONSENT_STATUS.VERIFIED,
+            CONSENT_STATUS.ADMIN_REVIEW_PENDING,
+        ];
+        if (manualLockedStatuses.includes(currentStatus)) {
+            return NextResponse.json(
+                { success: false, error: { message: 'Manual consent flow already started for this lead' } },
+                { status: 409 }
+            );
+        }
+
         // 2. Generate Link
         const token = generateConsentToken();
         const consentId = generateConsentId();
@@ -35,7 +50,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
                 lead_id: leadId,
                 consent_for: 'primary',
                 consent_type: 'digital',
-                consent_status: 'link_sent',
+                consent_status: CONSENT_STATUS.LINK_SENT,
                 consent_token: token,
                 consent_link_url: linkUrl,
                 consent_link_sent_at: new Date(),
@@ -47,11 +62,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
             // Update Lead
             await tx.update(leads)
                 .set({
-                    consent_status: 'link_sent',
+                    consent_status: CONSENT_STATUS.LINK_SENT,
                     consent_link_url: linkUrl,
                     consent_link_sent_at: new Date(),
                     consent_link_expires_at: expiresAt,
                     consent_delivery_channel: channel,
+                    esign_error_code: null,
+                    esign_error_message: null,
                     consent_attempt_count: (lead[0].consent_attempt_count || 0) + 1,
                     updated_at: new Date(),
                 })
