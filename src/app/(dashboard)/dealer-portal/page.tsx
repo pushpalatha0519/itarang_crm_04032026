@@ -77,7 +77,7 @@ export default function DealerDashboard() {
             {/* Quick Action Widgets */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {/* New Lead - Primary Action */}
-                <Link href="/dealer-portal/leads/new" className="group relative overflow-hidden rounded-2xl bg-[#005596] p-6 text-white shadow-lg transition-transform hover:-translate-y-1 hover:shadow-xl">
+                <Link href="/leads/new" className="group relative overflow-hidden rounded-2xl bg-[#005596] p-6 text-white shadow-lg transition-transform hover:-translate-y-1 hover:shadow-xl">
                     <div className="relative z-10 flex flex-col h-full justify-between min-h-[140px]">
                         <div className="p-3 bg-white/10 w-fit rounded-xl backdrop-blur-sm group-hover:bg-white/20 transition-colors">
                             <Plus className="w-6 h-6" />
@@ -163,7 +163,7 @@ export default function DealerDashboard() {
                         <h3 className="font-bold text-gray-900">Recent Leads</h3>
                         <p className="text-sm text-gray-500">Latest potential customers added</p>
                     </div>
-                    <Link href="/dealer-portal/leads" className="text-sm font-medium text-brand-600 hover:text-brand-700 flex items-center gap-1">
+                    <Link href="/leads" className="text-sm font-medium text-brand-600 hover:text-brand-700 flex items-center gap-1">
                         View All Leads <ChevronRight className="w-4 h-4" />
                     </Link>
                 </div>
@@ -229,7 +229,7 @@ function LeadRow({ lead }: { lead: any }) {
     };
 
     return (
-        <Link href={`/dealer-portal/leads?new=${lead.id}`} className="flex items-center justify-between p-4 hover:bg-gray-50 rounded-xl transition-colors cursor-pointer group">
+        <Link href={`/leads?new=${lead.id}`} className="flex items-center justify-between p-4 hover:bg-gray-50 rounded-xl transition-colors cursor-pointer group">
             <div className="flex items-center gap-4">
                 <div className="w-10 h-10 rounded-full bg-brand-50 flex items-center justify-center text-brand-600 font-bold text-sm uppercase">
                     {lead.owner_name?.[0] || 'U'}

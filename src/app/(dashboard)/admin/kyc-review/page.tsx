@@ -1,5 +1,5 @@
 'use client';
-
+import ConsentReviewQueue from '@/components/admin/ConsentReviewQueue';
 import { useState, useEffect } from 'react';
 import {
     Loader2, Search, CheckCircle2, XCircle, AlertTriangle,
@@ -253,6 +253,8 @@ export default function AdminKYCReviewPage() {
                         ))
                     )}
                 </div>
+                {/* Bottom Queue: Customer Consent */}
+                <ConsentReviewQueue />
             </div>
         </div>
     );

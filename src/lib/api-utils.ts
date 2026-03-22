@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
 import { db } from './db';
-import { sql, eq, desc } from 'drizzle-orm';
+import { eq, desc, like } from 'drizzle-orm';
 
 export function successResponse(data: any, status = 200) {
     return NextResponse.json({
@@ -24,12 +24,12 @@ export function withErrorHandler(handler: Function) {
         try {
             return await handler(req, context);
         } catch (error: any) {
-            // Re-throw Next.js redirect errors
             if (error.digest?.startsWith('NEXT_REDIRECT')) {
                 throw error;
             }
 
             console.error('API Error:', error);
+
             if (error instanceof ZodError) {
                 return NextResponse.json({
                     success: false,
@@ -43,6 +43,7 @@ export function withErrorHandler(handler: Function) {
                     timestamp: new Date().toISOString()
                 }, { status: 400 });
             }
+
             return errorResponse(error.message || 'Internal error', 500);
         }
     };
@@ -50,13 +51,13 @@ export function withErrorHandler(handler: Function) {
 
 export async function generateId(prefix: string, table: any): Promise<string> {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const pattern = `${prefix}-${date}-%`;
 
-    // Try up to 10 times to generate a unique ID (handles race conditions)
     for (let attempt = 0; attempt < 10; attempt++) {
         // Find the last ID for this prefix and date
         const lastRecord = await db.select({ id: table.id })
             .from(table)
-            .where(sql`${table.id} LIKE ${prefix + '-' + date + '-%'}`)
+            .where(like(table.id, pattern))
             .orderBy(desc(table.id))
             .limit(1);
 
@@ -64,7 +65,7 @@ export async function generateId(prefix: string, table: any): Promise<string> {
         if (lastRecord.length > 0) {
             const lastId = lastRecord[0].id;
             const lastSeq = parseInt(lastId.split('-').pop() || '0');
-            sequence = lastSeq + 1 + attempt; // Add attempt number to avoid conflicts
+            sequence = lastSeq + 1 + attempt;
         }
 
         const candidateId = `${prefix}-${date}-${sequence.toString().padStart(3, '0')}`;
@@ -78,11 +79,9 @@ export async function generateId(prefix: string, table: any): Promise<string> {
         if (existing.length === 0) {
             return candidateId; // ID is available
         }
-
-        // If we get here, there's a conflict, try again with higher sequence
     }
 
-    // If we can't find a unique ID after 10 attempts, use timestamp-based ID
+    // Fallback if unique ID cannot be generated
     const timestamp = Date.now();
     return `${prefix}-${date}-${timestamp.toString().slice(-6)}`;
 }
@@ -90,10 +89,11 @@ export async function generateId(prefix: string, table: any): Promise<string> {
 export async function generateLeadReference(table: any): Promise<string> {
     const year = new Date().getFullYear();
     const prefix = `#IT-${year}`;
+    const pattern = `${prefix}-%`;
 
     const lastRecord = await db.select({ reference_id: table.reference_id })
         .from(table)
-        .where(sql`${table.reference_id} LIKE ${prefix + '-%'}`)
+        .where(like(table.reference_id, pattern))
         .orderBy(desc(table.reference_id))
         .limit(1);
 

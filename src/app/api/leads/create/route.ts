@@ -5,7 +5,7 @@ import { leads, personalDetails, auditLogs, accounts } from '@/lib/db/schema';
 import { successResponse, errorResponse, withErrorHandler, generateId } from '@/lib/api-utils';
 import { requireRole } from '@/lib/auth-utils';
 import { z } from 'zod';
-import { eq, and, sql, desc } from 'drizzle-orm';
+import { eq, and, sql, desc, like } from 'drizzle-orm';
 
 const step1Schema = z.object({
     full_name: z.string().optional().nullable(),
@@ -38,15 +38,18 @@ const step1Schema = z.object({
 async function generateLeadReference() {
     const year = new Date().getFullYear();
     const prefix = `#IT-${year}`;
+    const pattern = `${prefix}-%`;
+    
     const [lastRecord] = await db.select({ reference_id: leads.reference_id })
         .from(leads)
-        .where(sql`${leads.reference_id} LIKE ${prefix + '-%'}`)
+        .where(like(leads.reference_id, pattern))
         .orderBy(desc(leads.reference_id))
         .limit(1);
 
     let sequenceNum = 1;
     if (lastRecord?.reference_id) {
-        const lastSeq = lastRecord.reference_id.split('-').pop();
+        const parts = lastRecord.reference_id.split('-');
+        const lastSeq = parts[parts.length - 1];
         if (lastSeq) sequenceNum = parseInt(lastSeq) + 1;
     }
     return `${prefix}-${sequenceNum.toString().padStart(7, '0')}`;
@@ -61,7 +64,7 @@ const normalizePhone = (phone?: string | null) => {
 };
 
 export const POST = withErrorHandler(async (req: Request) => {
-    const user = await requireRole(['dealer']);
+    const user = await requireRole(['dealer', 'ceo', 'sales_head', 'sales_manager', 'sales_executive']);
     let dealer_id = user.dealer_id;
 
     try {
@@ -144,30 +147,46 @@ export const POST = withErrorHandler(async (req: Request) => {
             const leadId = await generateId('LEAD', leads);
             const referenceId = await generateLeadReference();
 
+            console.log(`[leads/create] Initializing draft: leadId=${leadId}, referenceId=${referenceId}, dealerId=${dealer_id}`);
+
             await db.transaction(async (tx) => {
-                await tx.insert(leads).values({
+                const leadValues = {
                     id: leadId,
                     reference_id: referenceId,
-                    dealer_id,
+                    dealer_id: dealer_id,
                     uploader_id: user.id,
                     status: 'INCOMPLETE',
                     workflow_step: 1,
-                    lead_source: 'dealer_referral', // Default for dealer portal
+                    lead_source: 'dealer_referral',
                     owner_name: 'DRAFT',
                     owner_contact: 'DRAFT',
-                });
-                await tx.insert(personalDetails).values({
+                    lead_status: 'new',
+                    is_current_same: false,
+                    auto_filled: false,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                };
+                
+                await tx.insert(leads).values(leadValues);
+                
+                const pdValues = {
                     id: crypto.randomUUID(),
                     lead_id: leadId,
                     dob: null,
-                    father_husband_name: null
-                });
+                    father_husband_name: null,
+                    local_address: null,
+                    permanent_address: null,
+                    created_at: new Date(),
+                    updated_at: new Date()
+                };
+                
+                await tx.insert(personalDetails).values(pdValues);
             });
 
             return successResponse({ leadId, referenceId }, 201);
-        } catch (err) {
+        } catch (err: any) {
             console.error("Draft initialization failed:", err);
-            return errorResponse("Failed to initialize or load your draft. Please try again.", 500);
+            return errorResponse(`Failed to initialize or load your draft: ${err.message || 'Unknown error'}. Please try again.`, 500);
         }
     }
 
@@ -202,6 +221,9 @@ export const POST = withErrorHandler(async (req: Request) => {
 
         try {
             await db.transaction(async (tx) => {
+                // Secondary products are stored in interested_in field as slugs
+                const secondaryProducts = (data.additional_products || []).map((p: any) => p.category_name || p.category_id).filter(Boolean);
+
                 await tx.update(leads).set({
                     full_name: data.full_name?.trim(),
                     phone: normPhone,
@@ -222,7 +244,7 @@ export const POST = withErrorHandler(async (req: Request) => {
                     vehicle_ownership: data.vehicle_ownership,
                     vehicle_owner_name: data.vehicle_owner_name?.trim(),
                     vehicle_owner_phone: normOwnerPhone,
-                    interested_in: data.interested_in || [],
+                    interested_in: secondaryProducts,
                     payment_method: data.payment_method || 'finance',
                     kyc_status: isUpfront ? 'not_required' : 'not_started',
                     workflow_step: isUpfront ? 3 : 1,

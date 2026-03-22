@@ -14,8 +14,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ lead
 
         const l = lead[0];
 
-        // Access condition: lead must exist and be a hot lead
-        const allowed = l.interest_level === 'hot' && l.status !== 'ABANDONED';
+        // Access condition: lead must exist and be a hot lead and NOT cash payment
+        const allowed = l.interest_level === 'hot' && 
+                       l.status !== 'ABANDONED' && 
+                       l.payment_method !== 'Cash' && 
+                       l.payment_method !== 'cash';
 
         return NextResponse.json({
             success: true,

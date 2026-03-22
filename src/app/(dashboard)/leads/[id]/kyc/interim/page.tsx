@@ -66,7 +66,7 @@ export default function InterimStepPage() {
                 const accessRes = await fetch(`/api/coborrower/${leadId}/access-check`);
                 const accessData = await accessRes.json();
                 if (!accessData.success || !accessData.allowed) {
-                    router.push(`/dealer-portal/leads/${leadId}/kyc`);
+                    router.push(`/leads/${leadId}/kyc`);
                     return;
                 }
 
@@ -222,7 +222,7 @@ export default function InterimStepPage() {
             });
             const data = await res.json();
             if (data.success) {
-                router.push(`/dealer-portal/leads/${leadId}`); // Profile preview / Step 3
+                router.push(`/leads/${leadId}`); // Profile preview / Step 3
             } else {
                 setApiError(data.error?.message || 'Failed to proceed');
             }

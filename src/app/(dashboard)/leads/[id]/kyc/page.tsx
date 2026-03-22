@@ -1,7 +1,5 @@
 'use client';
 
-'use client';
-
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import stringSimilarity from "string-similarity";
@@ -10,6 +8,111 @@ import {
     AlertCircle, X, FileText,
     Send, Download, ArrowRight
 } from 'lucide-react';
+
+const CONSENT_FINAL_STATUSES = ['verified'] as const;
+const CONSENT_MANUAL_READY_STATUSES = [
+    'manual_pdf_generated',
+    'manual_review_pending',
+    'verified',
+] as const;
+
+const CONSENT_DIGITAL_LOCK_STATUSES = [
+    'manual_pdf_generated',
+    'manual_review_pending',
+    'verified',
+] as const;
+
+const normalizeConsentStatus = (status?: string | null) => {
+    const s = (status || '').toLowerCase();
+    if (s === 'manual_pdf_generated' || s === 'consent_generated') return 'manual_pdf_generated';
+    if (
+        s === 'manual_review_pending' ||
+        s === 'manual_uploaded' ||
+        s === 'consent_uploaded' ||
+        s === 'admin_review_pending'
+    ) return 'manual_review_pending';
+    if (s === 'verified' || s === 'manual_verified' || s === 'admin_verified') return 'verified';
+    return 'awaiting_signature';
+};
+
+const isConsentFinal = (status: string) =>
+    CONSENT_FINAL_STATUSES.includes(status as (typeof CONSENT_FINAL_STATUSES)[number]);
+
+const isManualUploadEnabled = (status: string) =>
+    CONSENT_MANUAL_READY_STATUSES.includes(status as (typeof CONSENT_MANUAL_READY_STATUSES)[number]);
+
+const isDigitalSendLocked = (status: string) =>
+    CONSENT_DIGITAL_LOCK_STATUSES.includes(status as (typeof CONSENT_DIGITAL_LOCK_STATUSES)[number]);
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const FINANCE_DOCUMENTS = [
+    { key: 'aadhaar_front', label: 'Aadhaar Front', required: true },
+    { key: 'aadhaar_back', label: 'Aadhaar Back', required: true },
+    { key: 'pan_card', label: 'PAN Card', required: true },
+    { key: 'passport_photo', label: 'Passport Size Photo', required: true },
+    { key: 'address_proof', label: 'Address Proof', required: true },
+    { key: 'rc_copy', label: 'RC Copy', required: false, conditional: true },
+    { key: 'bank_statement', label: 'Bank Statement', required: true },
+    { key: 'cheque_1', label: 'Undated Cheque 1', required: true },
+    { key: 'cheque_2', label: 'Undated Cheque 2', required: true },
+    { key: 'cheque_3', label: 'Undated Cheque 3', required: true },
+    { key: 'cheque_4', label: 'Undated Cheque 4', required: true },
+];
+
+const UPFRONT_DOCUMENTS = [
+    { key: 'aadhaar_front', label: 'Aadhaar Front', required: true },
+    { key: 'aadhaar_back', label: 'Aadhaar Back', required: true },
+    { key: 'pan_card', label: 'PAN Card', required: true },
+];
+
+type VerificationStatus = 'pending' | 'initiating' | 'awaiting_action' | 'in_progress' | 'success' | 'failed';
+type PaymentStatus = 'UNPAID' | 'QR_GENERATED' | 'PAYMENT_PENDING_CONFIRMATION' | 'PAID' | 'FAILED' | 'EXPIRED';
+
+interface OcrComparisonField {
+    field: string;
+    label: string;
+    ocrValue: string | null;
+    leadValue: string | null;
+    match: boolean;
+    similarity?: number;
+}
+
+interface DocUpload {
+    key: string;
+    file_url: string | null;
+    verification_status: VerificationStatus;
+    failed_reason?: string;
+    ocr_data?: Record<string, any> | null;
+    ocr_comparison?: OcrComparisonField[] | null;
+    ocr_failed?: boolean;
+    enable_manual_entry?: boolean;
+}
+
+interface VerificationRow {
+    type: string;
+    label: string;
+    status: VerificationStatus;
+    last_update: string | null;
+    failed_reason: string | null;
+}
+
+interface PaymentData {
+    payment_id: string;
+    qr_id: string;
+    qr_image_url: string;
+    qr_short_url: string;
+    qr_status: string;
+    expires_at: string;
+    base_amount: number;
+    discount_amount: number;
+    final_amount: number;
+    coupon_code: string | null;
+    facilitation_fee_status: PaymentStatus;
+    razorpay_payment_id?: string;
+}
+
+
 // ── Main Page ────────────────────────────────────────────────────────────────
 
 export default function KYCPage() {
@@ -28,8 +131,72 @@ export default function KYCPage() {
     const [paymentMethod, setPaymentMethod] = useState<string>('finance');
 
     const [consentStatus, setConsentStatus] = useState<string>('awaiting_signature');
+    const [verificationSubmitted, setVerificationSubmitted] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+
+    // ── Decentro Inline Verification ──
+    const [panNumber, setPanNumber] = useState('');
+    const [panVerifying, setPanVerifying] = useState(false);
+    const [panResult, setPanResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
+    const [aadhaarNumber, setAadhaarNumber] = useState('');
+    const [aadhaarTxnId, setAadhaarTxnId] = useState('');
+    const [aadhaarOtp, setAadhaarOtp] = useState('');
+    const [aadhaarStep, setAadhaarStep] = useState<'input' | 'otp'>('input');
+    const [aadhaarVerifying, setAadhaarVerifying] = useState(false);
+    const [aadhaarResult, setAadhaarResult] = useState<{ success: boolean; message: string } | null>(null);
+    const [bankAccountNo, setBankAccountNo] = useState('');
+    const [bankIfsc, setBankIfsc] = useState('');
+    const [bankName, setBankName] = useState('');
+    const [bankVerifying, setBankVerifying] = useState(false);
+    const [bankResult, setBankResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
+    const [faceMatching, setFaceMatching] = useState(false);
+    const [faceResult, setFaceResult] = useState<{ success: boolean; message: string; match_score?: number; is_match?: boolean } | null>(null);
+
+    // ── Digital Consent State ──
+    const [sendingConsent, setSendingConsent] = useState(false);
+    const [showConsentConfirm, setShowConsentConfirm] = useState<{ show: boolean; channel: 'sms' | 'whatsapp' }>({ show: false, channel: 'sms' });
+    const [confirmPhone, setConfirmPhone] = useState('');
+    const [consentSentToast, setConsentSentToast] = useState<{ show: boolean; message: string } | null>(null);
+
+    // ── Draft & Save ──
+
     const [saving, setSaving] = useState(false);
     const [lastSaved, setLastSaved] = useState<string | null>(null);
+    const [savingManual, setSavingManual] = useState(false);
+
+    const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('UNPAID');
+    const [paymentData, setPaymentData] = useState<PaymentData | null>(null);
+    const [reservedCouponCode, setReservedCouponCode] = useState<string | null>(null);
+    const [couponCode, setCouponCode] = useState('');
+    const [couponLoading, setCouponLoading] = useState(false);
+    const [couponResult, setCouponResult] = useState<any>(null);
+    const [generatingQr, setGeneratingQr] = useState(false);
+    const [regeneratingQr, setRegeneratingQr] = useState(false);
+
+    const [uploadedDocs, setUploadedDocs] = useState<Record<string, DocUpload>>({});
+    const [verifications, setVerifications] = useState<VerificationRow[]>([]);
+    const [ocrComparisons, setOcrComparisons] = useState<Record<string, OcrComparisonField[]>>({});
+
+    const [manualEntryDoc, setManualEntryDoc] = useState<string | null>(null);
+    const [manualFields, setManualFields] = useState<Record<string, string>>({
+        name: '',
+        father_name: '',
+        dob: '',
+        address: '',
+        pan_number: '',
+        aadhaar_number: '',
+    });
+    const [showBankManual, setShowBankManual] = useState(false);
+    const [bankManualFields, setBankManualFields] = useState<Record<string, string>>({
+        account_holder_name: '',
+        account_number: '',
+        confirm_account_number: '',
+        ifsc: '',
+        bank_name: '',
+    });
+    const [bankManualErrors, setBankManualErrors] = useState<Record<string, string>>({});
+
+    const isFinance = (paymentMethod || '').toLowerCase() !== 'cash';
 
     // ── Load Data ────────────────────────────────────────────────────────────
 
@@ -38,16 +205,71 @@ export default function KYCPage() {
             try {
                 const res = await fetch(`/api/kyc/${leadId}/access-check`);
                 const data = await res.json();
-                if (!data.success || !data.allowed) { setAccessDenied(true); return; }
+                if (!data.success || !data.allowed) {
+                    setAccessDenied(true);
+                    router.replace('/leads/new');
+                    return;
+                }
 
                 setLead(data.lead);
                 if (data.lead.payment_method) setPaymentMethod(data.lead.payment_method);
-                if (data.lead.consent_status) setConsentStatus(data.lead.consent_status);
+                setConsentStatus(normalizeConsentStatus(data.lead.consent_status));
+
+
+                if (data.lead.owner_contact) setConfirmPhone(data.lead.owner_contact);
+
+                // Load docs, verifications, and payment status in parallel
+                const [docsRes, verRes, payRes] = await Promise.all([
+                    fetch(`/api/kyc/${leadId}/documents`),
+                    fetch(`/api/kyc/${leadId}/verifications`),
+                    fetch(`/api/kyc/${leadId}/payment-status`),
+                ]);
+
+                const [docsData, verData, payData] = await Promise.all([
+                    docsRes.json(), verRes.json(), payRes.json(),
+                ]);
+
+                if (docsData.success) {
+                    const docMap: Record<string, DocUpload> = {};
+                    docsData.data.forEach((d: any) => {
+                        docMap[d.doc_type] = {
+                            key: d.doc_type,
+                            file_url: d.file_url,
+                            verification_status: d.verification_status,
+                            failed_reason: d.failed_reason,
+                        };
+                    });
+                    setUploadedDocs(docMap);
+                }
+
+                if (verData.success) setVerifications(verData.data);
+
+                if (payData.success && payData.data) {
+                    setPaymentStatus(payData.status || 'UNPAID');
+                    setPaymentData({
+                        payment_id: payData.data.id,
+                        qr_id: payData.data.razorpay_qr_id || '',
+                        qr_image_url: payData.data.razorpay_qr_image_url || '',
+                        qr_short_url: payData.data.razorpay_qr_short_url || '',
+                        qr_status: payData.data.razorpay_qr_status || '',
+                        expires_at: payData.data.razorpay_qr_expires_at || '',
+                        base_amount: Number(payData.data.facilitation_fee_base_amount) || 1500,
+                        discount_amount: Number(payData.data.coupon_discount_amount) || 0,
+                        final_amount: Number(payData.data.facilitation_fee_final_amount) || 1500,
+                        coupon_code: payData.data.coupon_code,
+                        facilitation_fee_status: payData.status,
+                        razorpay_payment_id: payData.data.razorpay_payment_id,
+                    });
+                    setReservedCouponCode(payData.reservedCoupon?.code || null);
+                } else if (payData.success) {
+                    setReservedCouponCode(payData.reservedCoupon?.code || null);
+                }
+
             } catch { setApiError('Failed to load KYC data'); }
             finally { setLoading(false); }
         };
         loadData();
-    }, [leadId]);
+    }, [leadId, router]);
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -63,6 +285,20 @@ export default function KYCPage() {
         const uploaded = required.filter(d => uploadedDocs[d.key]?.file_url);
         const pending = required.filter(d => !uploadedDocs[d.key]?.file_url);
         return { total: required.length, uploaded: uploaded.length, pending };
+    };
+    const docStats = getDocStats();
+    const hasAllRequiredDocs = docStats.uploaded >= docStats.total;
+    const hasReservedCouponClient = !isFinance
+        || !!reservedCouponCode
+        || couponResult?.status === 'reserved'
+        || (!!couponResult?.valid && !!couponResult?.coupon_code)
+        || !!paymentData?.coupon_code;
+    const canSaveAndNext = isConsentFinal(consentStatus) && hasAllRequiredDocs && hasReservedCouponClient;
+    const getSaveAndNextBlockingReason = () => {
+        if (!isConsentFinal(consentStatus)) return 'Awaiting consent verification';
+        if (!hasAllRequiredDocs) return `Upload all required documents (${docStats.uploaded}/${docStats.total})`;
+        if (!hasReservedCouponClient) return 'Validate verification coupon';
+        return '';
     };
 
     const feePaid = paymentStatus === 'PAID';
@@ -82,6 +318,9 @@ export default function KYCPage() {
             });
             const data = await res.json();
             setCouponResult(data);
+            if (data?.valid && data?.coupon_code) {
+                setReservedCouponCode(data.coupon_code);
+            }
         } catch {
             setCouponResult({ valid: false, message: 'Network error' });
         } finally {
@@ -395,15 +634,29 @@ export default function KYCPage() {
     // ── Consent ──────────────────────────────────────────────────────────────
 
     const handleSendConsent = async (channel: 'sms' | 'whatsapp') => {
+        setSendingConsent(true);
+        setApiError(null);
         try {
-            const res = await fetch(`/api/kyc/${leadId}/send-consent`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ channel }),
+            const res = await fetch(`/api/kyc/${leadId}/consent/digital/send-link`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel, customerPhone: confirmPhone }),
             });
             const data = await res.json();
-            if (data.success) setConsentStatus('link_sent');
-            else setApiError(data.error?.message || 'Failed to send consent');
+
+            if (data.success) {
+                setConsentStatus('awaiting_signature');
+                setConsentSentToast({
+                    show: true,
+                    message: `Consent link sent via ${channel.toUpperCase()}`,
+                });
+                setTimeout(() => setConsentSentToast(null), 4000);
+                setShowConsentConfirm({ show: false, channel: 'sms' });
+            } else {
+                setApiError(data.error?.message || 'Failed to send consent');
+            }
         } catch { setApiError('Failed to send consent'); }
+        finally { setSendingConsent(false); }
     };
 
     const [generatingPdf, setGeneratingPdf] = useState(false);
@@ -419,33 +672,138 @@ export default function KYCPage() {
         formData.append('uploadedBy', 'system'); // In a real app, retrieve user ID from auth context
         try {
             const res = await fetch(`/api/kyc/${leadId}/consent/manual/upload`, { method: 'POST', body: formData });
-            const data = await res.json();
-            if (data.success) {
+            const raw = await res.text();
+            let data: any = {};
+            try {
+                data = raw ? JSON.parse(raw) : {};
+            } catch {
+                data = { message: raw?.slice(0, 200) || null };
+            }
+            if (res.ok && data.success) {
                 setConsentStatus('manual_review_pending');
-            } else { setApiError(data.message || 'Upload failed'); }
-        } catch { setApiError('Upload failed'); }
+            } else {
+                setApiError(
+                    data?.error?.message ||
+                    data?.message ||
+                    `Upload failed (HTTP ${res.status})`
+                );
+            }
+        } catch (error) {
+            setApiError(error instanceof Error ? error.message : 'Upload failed');
+        }
         finally { setUploadingPdf(false); }
     };
-
     const handleGenerateConsentPDF = async () => {
         setGeneratingPdf(true);
+        setApiError(null);
+
         try {
             const res = await fetch(`/api/kyc/${leadId}/consent/manual/generate-pdf`, { method: 'POST' });
+            if (!res.ok) {
+                const errData = await res.json().catch(() => null);
+                setApiError(errData?.error?.message || 'Failed to generate PDF');
+                return;
+            }
+
+            const pdfBlob = await res.blob();
+            const objectUrl = URL.createObjectURL(pdfBlob);
+
+            const link = document.createElement('a');
+            link.href = objectUrl;
+            link.download = `DPDPA_consent_form_for_data_processing_${leadId}.pdf`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(objectUrl);
+
+            setConsentStatus('manual_pdf_generated');
+            setConsentSentToast({
+                show: true,
+                message: 'Consent PDF downloaded. Please print, sign, and upload scanned copy.',
+            });
+            setTimeout(() => setConsentSentToast(null), 5000);
+        } catch (error) {
+            setApiError('Failed to generate consent PDF');
+            console.error('Consent PDF error:', error);
+        } finally {
+            setGeneratingPdf(false);
+            setShowConsentConfirm({ show: false, channel: 'sms' });
+        }
+    };
+
+
+    // ── Decentro Verification Handlers ───────────────────────────────────────
+
+    const handlePanVerify = async () => {
+        if (!panNumber.trim()) return;
+        setPanVerifying(true); setPanResult(null);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/decentro/pan`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pan_number: panNumber.trim() }),
+            });
             const data = await res.json();
-            if (data.success && data.pdfUrl) {
-                setConsentStatus('manual_pdf_generated');
-                // Create a temporary link to automatically trigger the download
-                const link = document.createElement('a');
-                link.href = data.pdfUrl;
-                link.download = `Consent_${leadId}.pdf`;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                // Also open in a new tab as fallback
-                window.open(data.pdfUrl, '_blank');
-            } else { setApiError(data.message || 'Failed to generate PDF'); }
-        } catch { setApiError('Failed to generate PDF'); }
-        finally { setGeneratingPdf(false); }
+            setPanResult({ success: data.success, message: data.message, data: data.data });
+            const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
+            const verData = await verRes.json();
+            if (verData.success) setVerifications(verData.data);
+        } catch { setPanResult({ success: false, message: 'Request failed' }); }
+        finally { setPanVerifying(false); }
+    };
+
+    const handleAadhaarSendOtp = async () => {
+        if (!aadhaarNumber.trim()) return;
+        setAadhaarVerifying(true); setAadhaarResult(null);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/decentro/aadhaar-otp`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ aadhaar_number: aadhaarNumber.trim() }),
+            });
+            const data = await res.json();
+            if (data.success && data.decentroTxnId) {
+                setAadhaarTxnId(data.decentroTxnId); setAadhaarStep('otp');
+                setAadhaarResult({ success: true, message: 'OTP sent to Aadhaar-linked mobile' });
+            } else { setAadhaarResult({ success: false, message: data.message || 'Failed to send OTP' }); }
+        } catch { setAadhaarResult({ success: false, message: 'Request failed' }); }
+        finally { setAadhaarVerifying(false); }
+    };
+
+    const handleAadhaarVerifyOtp = async () => {
+        if (!aadhaarOtp.trim() || !aadhaarTxnId) return;
+        setAadhaarVerifying(true);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/decentro/aadhaar-verify`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ decentro_txn_id: aadhaarTxnId, otp: aadhaarOtp.trim() }),
+            });
+            const data = await res.json();
+            setAadhaarResult({ success: data.success, message: data.message });
+            if (data.success) {
+                setAadhaarStep('input');
+                const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
+                const verData = await verRes.json();
+                if (verData.success) setVerifications(verData.data);
+            }
+        } catch { setAadhaarResult({ success: false, message: 'Request failed' }); }
+        finally { setAadhaarVerifying(false); }
+    };
+
+    const handleBankVerify = async () => {
+        if (!bankAccountNo.trim() || !bankIfsc.trim()) return;
+        setBankVerifying(true); setBankResult(null);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/decentro/bank`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ account_number: bankAccountNo.trim(), ifsc: bankIfsc.trim(), name: bankName.trim() || undefined, perform_name_match: !!bankName.trim() }),
+            });
+            const data = await res.json();
+            setBankResult({ success: data.success, message: data.message, data: data.data });
+            const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
+            const verData = await verRes.json();
+            if (verData.success) setVerifications(verData.data);
+        } catch { setBankResult({ success: false, message: 'Request failed' }); }
+        finally { setBankVerifying(false); }
+
     };
 
     // ── Submit & Save ────────────────────────────────────────────────────────
@@ -463,9 +821,16 @@ export default function KYCPage() {
     };
 
     const handleSaveAndNext = async () => {
-        const validStatuses = ['digitally_signed', 'manual_uploaded', 'manual_review_pending', 'manual_verified', 'verified'];
-        if (!validStatuses.includes(consentStatus)) {
-            setApiError('Customer consent must be completed or pending review'); return;
+        if (!isConsentFinal(consentStatus)) {
+            setApiError('Customer consent must be admin verified before proceeding'); return;
+        }
+        if (!hasAllRequiredDocs) {
+            setApiError(`Please upload all required documents (${docStats.uploaded}/${docStats.total}) before proceeding`);
+            return;
+        }
+        if (!hasReservedCouponClient) {
+            setApiError('Please validate a verification coupon before proceeding');
+            return;
         }
 
         setSaving(true);
@@ -476,8 +841,8 @@ export default function KYCPage() {
             });
             const data = await res.json();
             if (data.success) {
-                if (data.requiresInterim) router.push(`/dealer-portal/leads/${leadId}/kyc/interim`);
-                else router.push(`/dealer-portal/leads/${leadId}`);
+                if (data.requiresInterim) router.push(`/leads/${leadId}/kyc/interim`);
+                else router.push(`/leads/${leadId}`);
             } else { setApiError(data.error?.message || 'Failed to proceed'); }
         } catch { setApiError('Connection failed'); }
         finally { setSaving(false); }
@@ -492,7 +857,7 @@ export default function KYCPage() {
                 <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
                 <h2 className="text-2xl font-bold text-gray-900 mb-2">Access Denied</h2>
                 <p className="text-gray-500 mb-6">KYC is only available for Hot leads.</p>
-                <button onClick={() => router.push('/dealer-portal/leads')} className="px-6 py-3 bg-[#0047AB] text-white rounded-xl font-bold">Back to Leads</button>
+                <button onClick={() => router.push('/leads')} className="px-6 py-3 bg-[#0047AB] text-white rounded-xl font-bold">Back to Leads</button>
             </div>
         </div>
     );
@@ -532,7 +897,7 @@ export default function KYCPage() {
                 {/* Step 2 Sub-Progress */}
                 <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-1">
                     {[
-                        { label: 'Consent', done: ['digitally_signed', 'manual_uploaded', 'manual_review_pending', 'verified'].includes(consentStatus), active: !['digitally_signed', 'manual_uploaded', 'manual_review_pending', 'verified'].includes(consentStatus) },
+                        { label: 'Consent', done: isConsentFinal(consentStatus), active: !isConsentFinal(consentStatus) },
                         { label: 'Review', done: false, active: false },
                     ].map((s, i) => (
                         <div key={s.label} className="flex items-center gap-2">
@@ -568,13 +933,22 @@ export default function KYCPage() {
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="space-y-3">
                                 <h4 className="text-sm font-bold text-gray-900">Digital Consent</h4>
-                                <button onClick={() => handleSendConsent('sms')} disabled={consentStatus !== 'awaiting_signature'}
-                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all">
-                                    <Send className="w-4 h-4" /> Send SMS Consent
+                                <button
+                                    onClick={() => setShowConsentConfirm({ show: true, channel: 'sms' })}
+                                    disabled={isDigitalSendLocked(consentStatus) || sendingConsent}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all"
+                                >
+                                    {sendingConsent && showConsentConfirm.channel === 'sms' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                                    Send SMS Consent
                                 </button>
-                                <button onClick={() => handleSendConsent('whatsapp')} disabled={consentStatus !== 'awaiting_signature'}
-                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-green-700 transition-all">
-                                    <Send className="w-4 h-4" /> Send WhatsApp Consent
+
+                                <button
+                                    onClick={() => setShowConsentConfirm({ show: true, channel: 'whatsapp' })}
+                                    disabled={isDigitalSendLocked(consentStatus) || sendingConsent}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-green-700 transition-all"
+                                >
+                                    {sendingConsent && showConsentConfirm.channel === 'whatsapp' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                                    Send WhatsApp Consent
                                 </button>
                             </div>
                             <div className="space-y-3">
@@ -584,21 +958,26 @@ export default function KYCPage() {
                                     {generatingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                                     Generate Consent PDF
                                 </button>
-                                <label className={`w-full flex items-center justify-center gap-2 px-4 py-3 border-2 border-dashed border-gray-200 rounded-xl text-sm font-bold transition-all ${consentStatus === 'manual_pdf_generated' ? 'cursor-pointer hover:border-[#0047AB]' : 'opacity-40 cursor-not-allowed'}`}>
+                                <label className={`w-full flex items-center justify-center gap-2 px-4 py-3 border-2 border-dashed border-gray-200 rounded-xl text-sm font-bold transition-all ${isManualUploadEnabled(consentStatus) ? 'cursor-pointer hover:border-[#0047AB]' : 'opacity-40 cursor-not-allowed'}`}>
                                     {uploadingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
                                     Upload Signed PDF
-                                    <input type="file" className="hidden" accept="application/pdf" disabled={consentStatus !== 'manual_pdf_generated' || uploadingPdf} onChange={e => { if (e.target.files?.[0]) handleUploadSignedConsent(e.target.files[0]) }} />
+                                    <input type="file" className="hidden" accept="application/pdf" disabled={!isManualUploadEnabled(consentStatus) || uploadingPdf} onChange={e => { if (e.target.files?.[0]) handleUploadSignedConsent(e.target.files[0]) }} />
                                 </label>
-                                {consentStatus === 'manual_pdf_generated' && (
+                                {isManualUploadEnabled(consentStatus) && (
                                     <p className="text-[10px] text-green-600 font-medium">PDF generated. Please print, sign, and upload here.</p>
                                 )}
                             </div>
                             <div className="space-y-3">
                                 <h4 className="text-sm font-bold text-gray-900">Status</h4>
                                 <div className="p-4 bg-gray-50 rounded-xl space-y-2">
-                                    {['awaiting_signature', 'manual_pdf_generated', 'manual_review_pending', 'verified'].map(s => (
+                                    {[
+                                        'awaiting_signature',
+                                        'manual_pdf_generated',
+                                        'manual_review_pending',
+                                        'verified',
+                                    ].map(s => (
                                         <div key={s} className="flex items-center gap-2">
-                                            {consentStatus === s || (['manual_review_pending', 'verified'].includes(consentStatus) && ['awaiting_signature', 'manual_pdf_generated'].includes(s))
+                                            {consentStatus === s || (isConsentFinal(consentStatus) && ['awaiting_signature', 'manual_pdf_generated', 'manual_review_pending'].includes(s))
                                                 ? <CheckCircle2 className="w-4 h-4 text-green-500" />
                                                 : <div className="w-4 h-4 rounded-full border-2 border-gray-200" />}
                                             <span className={`text-xs font-medium ${consentStatus === s ? 'text-gray-900' : 'text-gray-400'}`}>
@@ -606,40 +985,102 @@ export default function KYCPage() {
                                             </span>
                                         </div>
                                     ))}
+
+                                    <div className="text-[11px] text-gray-500">
+                                        These buttons stay disabled once manual consent starts or link is active.
+                                    </div>
                                 </div>
+
                             </div>
                         </div>
                     </SectionCard>
+                </main>
 
-                </main >
-
-                {/* ═══════════════════════════════════════════════════════════
-                    STICKY FOOTER
-                   ═══════════════════════════════════════════════════════════ */}
-                < div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg z-50" >
+                {/* STICKY FOOTER */}
+                <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg z-50">
                     <div className="max-w-[1200px] mx-auto px-6 py-4 flex items-center justify-between">
                         <div className="flex items-center gap-4">
-                            <button onClick={() => router.push('/dealer-portal/leads')}
-                                className="px-5 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50 flex items-center gap-2">
+                            <button
+                                onClick={() => router.push('/leads')}
+                                className="px-5 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50 flex items-center gap-2"
+                            >
                                 <ChevronLeft className="w-4 h-4" /> Back
                             </button>
                             {lastSaved && <span className="text-xs text-gray-400">{lastSaved}</span>}
-                            <button onClick={() => handleSaveDraft(false)} disabled={saving}
-                                className="px-5 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-40 flex items-center gap-2">
+                            <button
+                                onClick={() => handleSaveDraft(false)}
+                                disabled={saving}
+                                className="px-5 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-40 flex items-center gap-2"
+                            >
                                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                                 Save Draft
                             </button>
                         </div>
                         <div className="flex items-center gap-3">
-                            <button onClick={handleSaveAndNext} disabled={saving}
-                                className="px-8 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] flex items-center gap-2">
-                                Save & Next <ArrowRight className="w-4 h-4" />
+                            <button
+                                onClick={handleSaveAndNext}
+                                disabled={saving || !canSaveAndNext}
+                                title={!canSaveAndNext ? getSaveAndNextBlockingReason() : undefined}
+                                className="px-8 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] flex items-center gap-2"
+                            >
+                                {canSaveAndNext ? 'Save & Next' : getSaveAndNextBlockingReason()}
+                                <ArrowRight className="w-4 h-4" />
                             </button>
                         </div>
                     </div>
-                </div >
-            </div >
-        </div >
+                </div>
+
+            </div>
+
+            {/* Digital Consent Modals & Toasts */}
+            {
+                showConsentConfirm.show && (
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+                        <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl">
+                            <h3 className="text-xl font-black text-gray-900 mb-2">Confirm Phone Number</h3>
+                            <p className="text-sm text-gray-500 mb-6">A consent link will be sent via {showConsentConfirm.channel.toUpperCase()}. Please verify the number:</p>
+
+                            <div className="mb-8">
+                                <label className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2 block">Mobile Number</label>
+                                <input
+                                    type="text"
+                                    value={confirmPhone}
+                                    onChange={(e) => setConfirmPhone(e.target.value)}
+                                    className="w-full h-14 px-5 bg-gray-50 border-2 border-gray-100 rounded-2xl text-lg font-bold outline-none focus:border-[#0047AB] transition-all"
+                                />
+                            </div>
+
+                            <div className="flex gap-4">
+                                <button
+                                    onClick={() => setShowConsentConfirm({ show: false, channel: 'sms' })}
+                                    className="flex-1 h-12 border-2 border-gray-100 rounded-xl text-sm font-bold text-gray-400 hover:bg-gray-50 transition-all"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={() => handleSendConsent(showConsentConfirm.channel)}
+                                    disabled={sendingConsent || !confirmPhone}
+                                    className="flex-1 h-12 bg-[#0047AB] text-white rounded-xl text-sm font-bold hover:shadow-lg disabled:opacity-40 transition-all flex items-center justify-center gap-2"
+                                >
+                                    {sendingConsent ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                                    Confirm & Send
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
+            {
+                consentSentToast && (
+                    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 z-[100] animate-in fade-in slide-in-from-bottom-4">
+                        <CheckCircle2 className="w-5 h-5 text-green-400" />
+                        <span className="text-sm font-bold">{consentSentToast.message}</span>
+                        <button onClick={() => setConsentSentToast(null)} className="ml-2 hover:text-gray-400"><X className="w-4 h-4" /></button>
+                    </div>
+                )
+            }
+        </div>
     );
 }
 

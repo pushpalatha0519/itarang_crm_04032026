@@ -1,119 +1,59 @@
-export const runtime = "nodejs";
+// src/app/api/kyc/[leadId]/generate-consent-pdf/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { leads, consentRecords } from '@/lib/db/schema';
-import { eq } from 'drizzle-orm';
-
 import PDFDocument from 'pdfkit';
-import fs from 'fs';
-import path from 'path';
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ leadId: string }> }
-) {
+export async function POST(req: NextRequest) {
   try {
-    const { leadId } = await params;
+    const url = new URL(req.url);
+    const leadId = url.pathname.split('/')[3];
 
-    // Fetch lead data
-    const lead = await db
-      .select()
-      .from(leads)
-      .where(eq(leads.id, leadId))
-      .limit(1);
-
-    if (!lead.length) {
-      return NextResponse.json(
-        { success: false, error: { message: 'Lead not found' } },
-        { status: 404 }
-      );
-    }
-
-    const l = lead[0];
-
-    // Ensure tmp folder exists
-    const tmpDir = path.join(process.cwd(), 'public', 'tmp');
-    if (!fs.existsSync(tmpDir)) {
-      fs.mkdirSync(tmpDir, { recursive: true });
-    }
-
-    // Create PDF filename
-    const fileName = `consent_preview_${leadId}_${Date.now()}.pdf`;
-    const filePath = path.join(tmpDir, fileName);
-
-    // Create PDF document
-    const doc = new PDFDocument({
-      margin: 50,
-      autoFirstPage: true,
-      font : null
+    const buffers: Buffer[] = [];
+    const doc = new PDFDocument({ 
+      autoFirstPage: false,
+      size: 'A4', 
+      margin: 50 
     });
 
-    const stream = fs.createWriteStream(filePath);
-    doc.pipe(stream);
+    // Use local font to avoid ENOENT errors with standard fonts in Next.js bundle
+    const pathMod = await import('path');
+    const fs = await import('fs');
+    const fontPath = pathMod.join(process.cwd(), 'public', 'fonts', 'Roboto-VariableFont_wdth,wght.ttf');
+    
+    doc.addPage();
+    if (fs.existsSync(fontPath)) {
+      doc.font(fontPath);
+    }
 
-    // Title
-    doc.fontSize(20).text('iTarang Customer Consent Form', {
-      align: 'center'
-    });
-
+    doc.fontSize(20);
+    doc.text('KYC Consent Form', { align: 'center' });
     doc.moveDown();
-
-    // Lead details
-    doc.fontSize(12).text(`Customer Name: ${l.full_name || ''}`);
+    
+    doc.fontSize(14);
     doc.text(`Lead ID: ${leadId}`);
-
+    doc.text(`Date: ${new Date().toLocaleString('en-IN')}`);
     doc.moveDown();
+    
+    doc.fontSize(12);
+    doc.text('I consent to KYC verification and data processing.', { lineGap: 4 });
 
-    doc.text('CUSTOMER LOAN CONSENT FORM');
-
-    doc.moveDown();
-
-    doc.text(
-      'I hereby provide consent for KYC verification, credit check, and loan processing with iTarang.'
-    );
-
-    doc.moveDown();
-
-    doc.text('Customer Signature: ________________________');
-    doc.text('Customer Thumb Impression: _________________');
-    doc.text('Witness Signature: _________________________');
-
+    doc.on('data', (chunk) => buffers.push(chunk as Buffer));
     doc.end();
 
-    const pdfUrl = `/tmp/${fileName}`;
-
-    // Save consent record in DB
-    const now = new Date();
-    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-    const seq = Math.floor(Math.random() * 10000)
-      .toString()
-      .padStart(4, '0');
-
-    await db.insert(consentRecords).values({
-      id: `CONSENT-${dateStr}-${seq}`,
-      lead_id: leadId,
-      consent_for: 'primary',
-      consent_type: 'manual',
-      consent_status: 'awaiting_signature',
-      generated_pdf_url: pdfUrl,
-      created_at: now,
-      updated_at: now
+    await new Promise((resolve, reject) => {
+      doc.on('end', resolve);
+      doc.on('error', reject);
     });
 
-    return NextResponse.json({
-      success: true,
-      pdfUrl,
-      expiresIn: 3600
+    const pdfBuffer = Buffer.concat(buffers);
+
+    return new NextResponse(pdfBuffer, {
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="kyc_${leadId}.pdf"`,
+      },
     });
   } catch (error) {
-    console.error('[Generate Consent PDF] Error:', error);
-
-    const message =
-      error instanceof Error ? error.message : 'Server error';
-
-    return NextResponse.json(
-      { success: false, error: { message } },
-      { status: 500 }
-    );
+    console.error('PDF Error:', error);
+    return NextResponse.json({ error: 'PDF generation failed' }, { status: 500 });
   }
 }

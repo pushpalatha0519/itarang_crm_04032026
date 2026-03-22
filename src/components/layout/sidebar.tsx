@@ -127,7 +127,7 @@ const roleNavigation: Record<string, any[]> = {
         {
             section: 'SALES',
             items: [
-                { id: 'leads', label: 'Lead Management', icon: Users, href: '/dealer-portal/leads' },
+                { id: 'leads', label: 'Lead Management', icon: Users, href: '/leads' },
                 { id: 'loans', label: 'Loan Processing', icon: Landmark, href: '/dealer-portal/loans' },
                 { id: 'loan-mgmt', label: 'Loan Management', icon: CreditCard, href: '/dealer-portal/loans/management' },
                 { id: 'assets', label: 'Asset Management', icon: Car, href: '/dealer-portal/assets' },
